@@ -469,6 +469,27 @@ extension OttaiGlobalLoginTests {
         }
     }
 
+    func testGateway500DuringFreshGlobalCheckIdentifiesTheStepAndNeverBinds() {
+        withPreparationAccount { context in
+            var calls = 0
+            XCTAssertFalse(OttaiCloudClient.checkActivationBootstrap(mac: preparationMAC,
+                requestedContext: context, send: { request in
+                    calls += 1
+                    XCTAssertEqual(request.method, "POST")
+                    XCTAssertEqual(request.url, OttaiConstants.apiBaseGlobal + OttaiConstants.epValidateByMacV3)
+                    return .init(body: nil, failure: .init(
+                        text: "Account request: http=500 biz=NET_SECURITY_SYSTEM_ERROR",
+                        code: "NET_SECURITY_SYSTEM_ERROR", httpStatus: 500,
+                        stage: "Account request", origin: "gateway"))
+                }))
+            XCTAssertEqual(calls, 1)
+            XCTAssertFalse(OttaiRegistry.isV3CredentialBootstrapPending(preparationMAC))
+            XCTAssertEqual(OttaiCloudClient.lastFailure?.stage, "New sensor validation (V3)")
+            XCTAssertTrue(OttaiCloudClient.lastFailure?.displayText.contains("NET_SECURITY_SYSTEM_ERROR") == true)
+            XCTAssertTrue(OttaiCloudClient.lastFailure?.displayText.contains("No binding or activation was sent") == true)
+        }
+    }
+
     func testProductionValidationAcceptsFreshV3MetadataWithoutKeys() throws {
         try withPreparationAccount { _ in
             var requests: [OttaiGlobalContract.Request] = []

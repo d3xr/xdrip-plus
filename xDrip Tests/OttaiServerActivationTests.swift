@@ -1541,13 +1541,14 @@ final class OttaiPreparationTests: XCTestCase {
 }
 
 final class OttaiSetupSafetyTests: XCTestCase {
-    func testFreshGlobalHasExplicitPreparationWithoutChangingFetch() {
+    func testFreshGlobalHasDistinctCheckAndExistingSensorRestore() {
         func offer(_ api: String = OttaiConstants.apiBaseGlobal, signedIn: Bool = true,
-                   hasKeys: Bool = false, pending: Bool = false, step: OttaiSetupStep = .fetch) -> Bool {
+                   hasKeys: Bool = false, pending: Bool = false, step: OttaiSetupStep = .prepareNew) -> Bool {
             OttaiNewSensorPreparationPolicy.shouldOffer(apiBase: api, signedIn: signedIn,
                 hasKeys: hasKeys, bootstrapPending: pending, step: step)
         }
         XCTAssertTrue(offer())
+        XCTAssertFalse(offer(step: .fetch)) // Existing-sensor restore never triggers fresh V3 preparation.
         XCTAssertFalse(offer(signedIn: false))
         XCTAssertFalse(offer(hasKeys: true))
         XCTAssertFalse(offer(pending: true))
@@ -1567,17 +1568,19 @@ final class OttaiSetupSafetyTests: XCTestCase {
     private func step(sensorID: String = "0000000000AC", signedIn: Bool = true, keys: Bool = true,
                       bootstrap: Bool = false, pendingBind: Bool = false, requested: Bool = false,
                       started: Bool = false, command: Int = -1, savedCommand: Int = -1,
-                      startMs: Int64 = 0) -> OttaiSetupStep {
+                      startMs: Int64 = 0, newGlobal: Bool = false) -> OttaiSetupStep {
         OttaiSetupStep.resolve(sensorID: sensorID, signedIn: signedIn, hasKeys: keys,
             bootstrapPending: bootstrap, pendingBind: pendingBind, activationRequested: requested,
             activationStarted: started, commandStatus: command, savedCommandStatus: savedCommand,
-            startMs: startMs, nowMs: now)
+            startMs: startMs, nowMs: now, newGlobalSensor: newGlobal)
     }
 
     func testSetupOffersOnlyTheNextRequiredStep() {
         XCTAssertEqual(step(sensorID: "", signedIn: false, keys: false), .enterID)
         XCTAssertEqual(step(signedIn: false, keys: false), .signIn)
-        XCTAssertEqual(step(keys: false), .fetch)
+        XCTAssertEqual(step(keys: false), .fetch) // CN/Syai and previously linked reads
+        XCTAssertEqual(step(keys: false, newGlobal: true), .prepareNew)
+        XCTAssertEqual(step(keys: false, bootstrap: true, newGlobal: true), .activate)
         XCTAssertEqual(step(keys: false, bootstrap: true), .activate)
         XCTAssertEqual(step(keys: true), .connect)
         XCTAssertEqual(step(command: 2), .activate)

@@ -588,7 +588,21 @@ enum OttaiCloudClient {
             body: ["mac": canonical, "signature": signForProfile(profile, deviceId: deviceId, ts: ts, canonical)],
             headers: capturedHeaders)
         let reply = preparationSend(request, send: send)
-        guard (stillAuthorized() && preparationContextIsCurrent(requestedContext)), reply.failure == nil,
+        // A secure gateway 500 is not evidence that the sensor is invalid or that
+        // activation was attempted. Keep the exact failed stage in a safe diagnostic.
+        if let failure = reply.failure {
+            let gateway500 = requestedContext.apiBase == OttaiConstants.apiBaseGlobal
+                && failure.httpStatus == 500
+                && failure.code.caseInsensitiveCompare("NET_SECURITY_SYSTEM_ERROR") == .orderedSame
+            lastFailure = CloudFailure(
+                text: gateway500
+                    ? "Ottai Global rejected the V3 check (HTTP 500 / NET_SECURITY_SYSTEM_ERROR). No binding or activation was sent. Sign in again under Account for the updated Global phone session; if it persists, report this exact stage and code."
+                    : failure.text,
+                code: failure.code, httpStatus: failure.httpStatus,
+                stage: "New sensor validation (V3)", origin: failure.origin)
+            return false
+        }
+        guard (stillAuthorized() && preparationContextIsCurrent(requestedContext)),
               let body = reply.body, let device = parseDeviceResp(body, requireKeyA: false),
               OttaiConstants.canonicalSensorId(device.mac) == canonical,
               OttaiGlobalContract.preparationBindVersion(device.deviceVersion) != nil else {

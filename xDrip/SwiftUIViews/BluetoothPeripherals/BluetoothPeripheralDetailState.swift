@@ -3169,7 +3169,7 @@ enum OttaiNewSensorPreparationPolicy {
     static func shouldOffer(apiBase: String, signedIn: Bool, hasKeys: Bool,
                             bootstrapPending: Bool, step: OttaiSetupStep) -> Bool {
         apiBase == OttaiConstants.apiBaseGlobal && signedIn && !hasKeys
-            && !bootstrapPending && step == .fetch
+            && !bootstrapPending && step == .prepareNew
     }
 }
 
@@ -3261,11 +3261,13 @@ private extension BluetoothPeripheralDetailState {
                 action: step.hasAction ? { [weak self] in self?.performOttaiSetupStep(for: ottai) } : nil)
         ]
         if canPrepareNewOttaiGlobalSensor(for: ottai) {
+            // A new Global M8 is not yet bound: normal Fetch is for existing sensors.
+            // Keep restore available as a distinct, explicitly named read-only action.
             sensorRows.append(row(
-                id: "ottai-prepare-new-global", title: "Prepare new sensor",
-                detail: "For a new unused Global sensor; activation is confirmed separately",
+                id: "ottai-restore-existing-global", title: "Restore already activated sensor",
+                detail: "Read existing sensor keys from your account. Not for a new, unused M8.",
                 detailLineLimit: 3, showsDisclosure: true, isEnabled: !busy,
-                action: { [weak self] in self?.requestOttaiNewSensorPreparation(for: ottai) }
+                action: { [weak self] in self?.requestOttaiFetchMaterials(for: ottai) }
             ))
         }
         sensorRows += sensorInfoRows + nfcWakeRows
@@ -3380,7 +3382,8 @@ private extension BluetoothPeripheralDetailState {
             commandStatus: ottaiTransmitter(for: ottai)?.sensorCommandStatus ?? -1,
             savedCommandStatus: OttaiRegistry.sensorStatus(id),
             startMs: materials.activeTimeMs > 0 ? materials.activeTimeMs : provisionalStart,
-            nowMs: Int64(Date().timeIntervalSince1970 * 1000), preheatPeriodMs: materials.preheatPeriodMs
+            nowMs: Int64(Date().timeIntervalSince1970 * 1000), preheatPeriodMs: materials.preheatPeriodMs,
+            newGlobalSensor: OttaiRegistry.loadApiBase() == OttaiConstants.apiBaseGlobal
         )
     }
 
@@ -3389,6 +3392,7 @@ private extension BluetoothPeripheralDetailState {
         switch ottaiSetupStep(for: ottai) {
         case .enterID: requestOttaiCloudId(for: ottai)
         case .signIn: requestOttaiAccount()
+        case .prepareNew: requestOttaiNewSensorPreparation(for: ottai)
         case .fetch, .finishingSetup: requestOttaiFetchMaterials(for: ottai)
         case .connect:
             guard canActivateCurrentPeripheral() else { return }
