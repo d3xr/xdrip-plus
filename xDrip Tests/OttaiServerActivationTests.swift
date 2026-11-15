@@ -1405,12 +1405,53 @@ final class OttaiPreparationTests: XCTestCase {
 
     func testExplicitBindRefusalAllowsAnotherBind() {
         let result = OttaiCloudClient.recoverPreparation(version: "V1.7", bind: {
-            MaterialsResult(value: nil, failure: .init(text: "bind refused", code: "DEVICE_ALREADY_USED"))
+            MaterialsResult(value: nil, failure: .init(text: "bind refused", code: "DEVICE_ALREADY_USED", httpStatus: 200))
         }, lookup: {
             MaterialsResult(value: nil, failure: nil)
         })
         XCTAssertTrue(result.bindRejected)
         XCTAssertEqual(result.operation.failure?.code, "DEVICE_ALREADY_USED")
+    }
+
+    func testServerOrTransportErrorsNeverProveBindWasRejected() throws {
+        let failures: [OttaiCloudClient.CloudFailure] = [
+            try XCTUnwrap(OttaiCloudClient.decodeRequestResult(status: 500, body: ["code": "500"]).failure),
+            try XCTUnwrap(OttaiCloudClient.decodeRequestResult(status: 200, body: ["code": "500"]).failure),
+            .init(text: "unavailable", code: "DEVICE_ALREADY_USED", httpStatus: 503),
+            .init(text: "connection timed out"),
+            .init(text: "secure exchange failed", code: "DEVICE_ALREADY_USED", httpStatus: 200, origin: "transport"),
+            .init(text: "unrecognized response", code: "UNKNOWN_SERVER_FAILURE", httpStatus: 200)
+        ]
+        for failure in failures {
+            let result = OttaiCloudClient.recoverPreparation(version: "V1.7", bind: {
+                MaterialsResult(value: nil, failure: failure)
+            }, lookup: {
+                MaterialsResult(value: nil, failure: nil)
+            })
+            XCTAssertFalse(result.bindRejected, "An uncertain response must not permit another binding POST: \(failure.displayText)")
+            XCTAssertEqual(result.operation.failure?.code, failure.code)
+            XCTAssertEqual(result.operation.failure?.httpStatus, failure.httpStatus)
+        }
+    }
+
+    func testOnlyTheBindingResponseCanProveItsExplicitRefusal() {
+        let result = OttaiCloudClient.recoverPreparation(version: "V1.7", bind: {
+            MaterialsResult(value: nil, failure: .init(text: "HTTP 500", code: "500", httpStatus: 500))
+        }, lookup: {
+            MaterialsResult(value: nil, failure: .init(text: "lookup refused", code: "DEVICE_ALREADY_USED", httpStatus: 200))
+        })
+        XCTAssertFalse(result.bindRejected)
+        XCTAssertEqual(result.operation.failure?.code, "500")
+    }
+
+    func testExplicitBindRefusalSurvivesAnUnavailableReconciliationRead() {
+        let result = OttaiCloudClient.recoverPreparation(version: "V1.7", bind: {
+            MaterialsResult(value: nil, failure: .init(text: "bind refused", code: "AppUser_AlreadyBinding", httpStatus: 200))
+        }, lookup: {
+            MaterialsResult(value: nil, failure: .init(text: "lookup timed out"))
+        })
+        XCTAssertTrue(result.bindRejected)
+        XCTAssertEqual(result.operation.failure?.code, "AppUser_AlreadyBinding")
     }
 
     func testIncompleteBindFallsBackToMatchingSavedMaterials() {

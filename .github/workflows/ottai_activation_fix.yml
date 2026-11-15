@@ -1,0 +1,259 @@
+name: Ottai activation build and tests
+run-name: Ottai activation — ${{ github.ref_name }} @ ${{ github.sha }}
+
+on:
+  push:
+    branches: [fix/ottai-activation-500]
+  workflow_dispatch:
+    inputs:
+      signed_export:
+        description: Also export an App Store signed IPA using existing signing secrets (no upload)
+        type: boolean
+        default: false
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ottai-activation-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build-and-test:
+    name: Ottai tests, Simulator app and unsigned iPhone IPA
+    if: github.repository == 'd3xr/xdrip-plus'
+    # The bundled GS1 framework has an ARM64 Simulator slice, not an Intel slice.
+    # https://github.com/actions/runner-images/blob/main/images/macos/xcode-27-arm64-Readme.md
+    runs-on: xcode-27
+    timeout-minutes: 90
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.app/Contents/Developer
+      XDRIP_CI_TEAM: PUBLICDEMO
+    steps:
+      - name: Check out the exact requested commit
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Record toolchain and select an ARM64 Simulator
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          mkdir -p .ci-artifacts
+          xcodebuild -version | tee .ci-artifacts/toolchain.txt
+          git rev-parse HEAD > .ci-artifacts/source-commit.txt
+          xcrun simctl list devices available --json > .ci-artifacts/simulators.json
+          python3 - <<'PY'
+          import json, os, pathlib
+          data = json.loads(pathlib.Path('.ci-artifacts/simulators.json').read_text())
+          candidates = [
+              (runtime, device) for runtime, devices in data['devices'].items()
+              if '.iOS-' in runtime
+              for device in devices
+              if device.get('isAvailable') and device['name'].startswith('iPhone')
+          ]
+          if not candidates:
+              raise SystemExit('No available iPhone Simulator was found')
+          candidates.sort(key=lambda item: (
+              not item[0].endswith('iOS-27-0'), item[1]['name'] != 'iPhone 17',
+              item[0], item[1]['name']))
+          runtime, device = candidates[0]
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write('XDRIP_SIMULATOR_ID=' + device['udid'] + '\n')
+          print('Selected Simulator:', runtime, device['name'])
+          PY
+
+      - name: Build the Simulator app, extensions and XCTest bundle
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -workspace xdrip.xcworkspace -scheme xdrip -configuration Debug \
+            -destination "platform=iOS Simulator,id=$XDRIP_SIMULATOR_ID" \
+            -destination-timeout 180 -derivedDataPath .ci-derived/Simulator \
+            XDRIP_DEVELOPMENT_TEAM="$XDRIP_CI_TEAM" DEVELOPMENT_TEAM="$XDRIP_CI_TEAM" \
+            CODE_SIGN_IDENTITY=- CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES \
+            build-for-testing > .ci-artifacts/simulator-build.log 2>&1 || {
+              tail -n 120 .ci-artifacts/simulator-build.log
+              exit 1
+            }
+          python3 - <<'PY'
+          from pathlib import Path
+          app = Path('.ci-derived/Simulator/Build/Products/Debug-iphonesimulator/xdrip.app')
+          products = [app,
+              app / 'PlugIns/xDrip Widget Extension.appex',
+              app / 'PlugIns/xDrip Notification Context Extension.appex',
+              app / 'Watch/xDrip Watch App.app',
+              app / 'Watch/xDrip Watch App.app/PlugIns/xDrip Watch Complication Extension.appex']
+          missing = [str(path) for path in products if not path.is_dir()]
+          if missing:
+              raise SystemExit('Missing Simulator products: ' + ', '.join(missing))
+          print('Verified the Simulator app and all four embedded extension/watch products')
+          PY
+          ditto -c -k --sequesterRsrc --keepParent \
+            .ci-derived/Simulator/Build/Products/Debug-iphonesimulator/xdrip.app \
+            .ci-artifacts/xdrip-plus-SIMULATOR.app.zip
+
+      - name: Run all Ottai suites and shared integration checks
+        run: |
+          set -euo pipefail
+          XDRIP_TEST_SUITES=(
+            OttaiAccountSensorsTests OttaiGlobalLoginTests OttaiLoginFlowTests
+            OttaiNetSecurityTests OttaiRegionalTransportTests OttaiServerActivationTests
+            OttaiStartupBackfillTests CGMModelMigrationTests CGMUpstreamMigrationTests
+            GenericHeartbeatSubscriptionTests BluetoothPeripheralDisplayStatusTests
+            SensorExpiryReminderManagerTests
+          )
+          XDRIP_TEST_SELECTION=()
+          for suite in "${XDRIP_TEST_SUITES[@]}"; do
+            XDRIP_TEST_SELECTION+=("-only-testing:xdripTests/$suite")
+          done
+          xcodebuild \
+            -workspace xdrip.xcworkspace -scheme xdrip -configuration Debug \
+            -destination "platform=iOS Simulator,id=$XDRIP_SIMULATOR_ID" \
+            -destination-timeout 180 -derivedDataPath .ci-derived/Simulator \
+            -resultBundlePath .ci-artifacts/OttaiTests.xcresult \
+            -parallel-testing-enabled NO \
+            XDRIP_DEVELOPMENT_TEAM="$XDRIP_CI_TEAM" DEVELOPMENT_TEAM="$XDRIP_CI_TEAM" \
+            CODE_SIGN_IDENTITY=- CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES \
+            "${XDRIP_TEST_SELECTION[@]}" \
+            test-without-building > .ci-artifacts/ottai-tests.log 2>&1 || {
+              tail -n 160 .ci-artifacts/ottai-tests.log
+              exit 1
+            }
+          tail -n 40 .ci-artifacts/ottai-tests.log
+
+      - name: Build the unsigned iPhone app and package the IPA
+        run: |
+          set -euo pipefail
+          # The Simulator app has already been packaged; free space for device products.
+          rm -rf .ci-derived/Simulator
+          xcodebuild \
+            -workspace xdrip.xcworkspace -scheme xdrip -configuration Release \
+            -destination 'generic/platform=iOS' -derivedDataPath .ci-derived/Device \
+            XDRIP_DEVELOPMENT_TEAM="$XDRIP_CI_TEAM" DEVELOPMENT_TEAM="$XDRIP_CI_TEAM" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= \
+            build > .ci-artifacts/unsigned-device-build.log 2>&1 || {
+              tail -n 120 .ci-artifacts/unsigned-device-build.log
+              exit 1
+            }
+          XDRIP_DEVICE_APP=.ci-derived/Device/Build/Products/Release-iphoneos/xdrip.app
+          test -d "$XDRIP_DEVICE_APP"
+          mkdir -p .ci-package/Payload
+          ditto "$XDRIP_DEVICE_APP" .ci-package/Payload/xdrip.app
+          (
+            cd .ci-package
+            ditto -c -k --sequesterRsrc --keepParent Payload ../.ci-artifacts/xdrip-plus-UNSIGNED.ipa
+          )
+          python3 - <<'PY'
+          import json, os, pathlib, plistlib
+          app = pathlib.Path('.ci-package/Payload/xdrip.app')
+          with (app / 'Info.plist').open('rb') as source:
+              info = plistlib.load(source)
+          metadata = {
+              'commit': os.environ['GITHUB_SHA'],
+              'version': info['CFBundleShortVersionString'],
+              'build': info['CFBundleVersion'],
+              'bundleIdentifier': info['CFBundleIdentifier'],
+              'signing': 'UNSIGNED — requires signing with your own Apple team before installation',
+              'simulatorArtifact': 'xdrip-plus-SIMULATOR.app.zip',
+              'deviceArtifact': 'xdrip-plus-UNSIGNED.ipa',
+              'tests': 'All seven Ottai suites and the shared integration suites listed in the workflow'
+          }
+          pathlib.Path('.ci-artifacts/build-info.json').write_text(json.dumps(metadata, indent=2) + '\n')
+          PY
+          {
+            printf '### Ottai build completed\n\n'
+            printf 'Source commit: `%s`\n\n' "$GITHUB_SHA"
+            printf 'All selected XCTest suites passed. Simulator app and embedded products built.\n\n'
+            printf '**The device IPA is unsigned and must be signed before installation.**\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload build products and test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: xdrip-ottai-build-${{ github.sha }}
+          path: .ci-artifacts/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
+  signed-export:
+    name: Optional App Store signed IPA (no TestFlight upload)
+    needs: build-and-test
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.signed_export &&
+      github.repository == 'd3xr/xdrip-plus' &&
+      github.ref == 'refs/heads/fix/ottai-activation-500'
+    runs-on: xcode-27
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.app/Contents/Developer
+      MATCH_READONLY: 'true'
+      FASTLANE_SKIP_UPDATE_CHECK: 'true'
+      FASTLANE_HIDE_CHANGELOG: 'true'
+    steps:
+      - name: Check out the tested commit
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Check signing configuration without exposing secret values
+        env:
+          TEAMID: ${{ secrets.TEAMID }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          FASTLANE_KEY_ID: ${{ secrets.FASTLANE_KEY_ID }}
+          FASTLANE_ISSUER_ID: ${{ secrets.FASTLANE_ISSUER_ID }}
+          FASTLANE_KEY: ${{ secrets.FASTLANE_KEY }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, pathlib, re
+          names = ['TEAMID', 'GH_PAT', 'FASTLANE_KEY_ID', 'FASTLANE_ISSUER_ID', 'FASTLANE_KEY', 'MATCH_PASSWORD']
+          if any(not os.environ.get(name, '').strip() for name in names):
+              raise SystemExit('Signed export requires the six existing Apple/Match signing secrets. The unsigned artifact remains available.')
+          team = os.environ['TEAMID'].strip()
+          if not re.fullmatch(r'[A-Z0-9]{10}', team):
+              raise SystemExit('The configured Apple team identifier is invalid')
+          pathlib.Path('xDripConfigOverride.xcconfig').write_text('XDRIP_DEVELOPMENT_TEAM = ' + team + '\n')
+          print('Signing configuration is present; secret values were not printed.')
+          PY
+
+      - name: Install the repository's pinned Fastlane dependencies
+        run: bundle install
+
+      - name: Export signed IPA using existing profiles, without publishing
+        env:
+          TEAMID: ${{ secrets.TEAMID }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          FASTLANE_KEY_ID: ${{ secrets.FASTLANE_KEY_ID }}
+          FASTLANE_ISSUER_ID: ${{ secrets.FASTLANE_ISSUER_ID }}
+          FASTLANE_KEY: ${{ secrets.FASTLANE_KEY }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # This lane performs Match + archive/export only. Never call the release lane.
+          bundle exec fastlane build_xdrip4ios
+          test -f Xdrip4iOS.ipa
+          mkdir -p .ci-signed-artifacts
+          cp Xdrip4iOS.ipa .ci-signed-artifacts/xdrip-plus-APPSTORE-SIGNED.ipa
+          printf '%s\n' "$GITHUB_SHA" > .ci-signed-artifacts/source-commit.txt
+          printf 'App Store signed export only. No TestFlight upload was performed.\n' \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the signed IPA only
+        uses: actions/upload-artifact@v6
+        with:
+          name: xdrip-ottai-appstore-signed-${{ github.sha }}
+          path: .ci-signed-artifacts/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7

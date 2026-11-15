@@ -2,7 +2,7 @@ import XCTest
 @testable import xdrip
 
 final class OttaiGlobalLoginTests: XCTestCase {
-    private let owner = "ottai-seas:a:g:ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"
+    private let owner = "ottai:a:g:ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"
     private let timestamp: Int64 = 1_760_000_000_123
     private let email = "fixture@example.invalid"
     private let password = "Only-for-public-fixture-123!"
@@ -33,15 +33,13 @@ final class OttaiGlobalLoginTests: XCTestCase {
         try work(defaults)
     }
 
-    func testOfficialURLDTOAndIndependentOpenSSLVector() throws {
-        XCTAssertEqual(OttaiGlobalContract.loginURL, "https://seas.ottai.com/cgm/app/server/user/login/variousLogin")
-        XCTAssertEqual(OttaiCloudClient.signForProfile(.globalPhone, deviceId: owner, ts: timestamp), "3272fb39aa3780046d9acbcd4cf85e8d")
+    func testCurrentEmailURLDTOAndIndependentMD5Vector() throws {
+        XCTAssertEqual(OttaiGlobalContract.loginURL, "https://seas.ottai.com/cgm/app/server/user/login/thirdLoginByPassword")
+        XCTAssertEqual(OttaiCloudClient.signForProfile(.globalPhone, deviceId: owner, ts: timestamp), "0ea0cc129d2f4b276e6ef7480989af92")
         let signature = OttaiCloudClient.signForProfile(.globalPhone, deviceId: owner, ts: timestamp, "fixture-api-token", email, password)
-        XCTAssertEqual(signature, "e33f72a1b8a45b827af4c52a81390c26")
+        XCTAssertEqual(signature, "db2c906ad604584ccb13d3a2c44dd3e2")
         let body = try XCTUnwrap(OttaiGlobalContract.passwordBody(email: email, password: password, apiToken: "fixture-api-token", signature: signature))
-        XCTAssertEqual(Set(body.keys), Set(["encryptInfo", "apiToken", "signature", "type", "phoneCode"]))
-        XCTAssertEqual(body["type"] as? String, "2")
-        XCTAssertEqual(body["phoneCode"] as? String, "")
+        XCTAssertEqual(Set(body.keys), Set(["encryptInfo", "apiToken", "signature"]))
         XCTAssertEqual(body["encryptInfo"] as? String, "Qpkz1BFBblAQvjg/STUUV30UgPhp91VauXazwylXdSndxJm8csX7pjdX1v/cnJemmbZX7bI/JWDPtIjrgnM6QVYrv1jQZ7l4KUNkDq8QQQsAQ8i+qeOR51dK0xtNpapV")
     }
 
@@ -54,12 +52,40 @@ final class OttaiGlobalLoginTests: XCTestCase {
             OttaiConstants.apiBaseGlobal + OttaiConstants.epGetBindDevice, OttaiConstants.apiBaseGlobal + OttaiConstants.epDeviceList])
         for (index, request) in calls.enumerated() {
             XCTAssertEqual(request.headers["deviceId"], owner)
-            XCTAssertEqual(request.headers["appName"], "ottai-seas")
-            XCTAssertEqual(request.headers["applicationType"], "ottai_seas")
+            XCTAssertEqual(request.headers["appName"], "ottai")
+            XCTAssertEqual(request.headers["ua"], "Android_Watch_Ottai_Arc")
+            XCTAssertEqual(request.headers["versionCode"], "244301", "The regional transport replaces this with its secure compatibility version")
+            XCTAssertEqual(request.headers["versionName"], "1.1.0")
+            XCTAssertEqual(request.headers["country"], "zh_CN")
+            XCTAssertNil(request.headers["applicationType"])
+            XCTAssertNil(request.headers["X-Forwarded-For"])
             XCTAssertEqual(request.headers["packageName"], "com.ottai.seas")
             XCTAssertEqual(request.headers["Authorization"], index < 2 ? nil : "fixture-native-token")
             XCTAssertEqual(request.headers["timestamp"], String(timestamp))
         }
+    }
+
+    func testUsernameUsesVariousLoginTypeThreeWithoutEmailRetry() throws {
+        var calls: [OttaiGlobalContract.Request] = []
+        let replies = goodReplies
+        let login = try OttaiGlobalContract.authenticate(email: "fixture-user", password: password,
+            deviceID: owner, deviceModel: "Fixture", send: { request in
+                let index = calls.count
+                calls.append(request)
+                guard index < replies.count else {
+                    XCTFail("Unexpected retry")
+                    return .init(body: nil, failure: .init(text: "Unexpected retry"))
+                }
+                return replies[index]
+            }, clock: { self.timestamp }).get()
+        XCTAssertTrue(login.ok)
+        XCTAssertEqual(calls.count, 4)
+        XCTAssertEqual(calls[1].url, "https://seas.ottai.com/cgm/app/server/user/login/variousLogin")
+        XCTAssertEqual(calls[1].body?["type"] as? Int, 3)
+        XCTAssertEqual(calls[1].body?["loginType"] as? Int, 3)
+        XCTAssertEqual(calls[1].body?["username"] as? String, "fixture-user")
+        XCTAssertEqual(calls[1].body?["signature"] as? String, "7419a7267f3466dbf6f2edee40f9e5c8")
+        XCTAssertFalse(calls.contains { $0.url == OttaiGlobalContract.loginURL })
     }
 
     func testTokenHTTPFailureOrMalformedDataNeverSendsPassword() {
@@ -184,9 +210,58 @@ final class OttaiGlobalLoginTests: XCTestCase {
         try defaults { defaults in XCTAssertEqual(OttaiRegistry.loadSessionProfile(in: defaults), .watch) }
         XCTAssertEqual(OttaiCloudClient.activeProfile(OttaiConstants.apiBaseGlobal, stored: .watch), .watch)
         XCTAssertEqual(OttaiCloudClient.activeProfile(OttaiConstants.apiBaseGlobal, stored: .globalPhone), .globalPhone)
+        XCTAssertEqual(OttaiCloudClient.activeProfile(OttaiConstants.apiBaseGlobal, stored: .globalPhoneLegacy), .globalPhoneLegacy)
         XCTAssertEqual(OttaiCloudClient.activeProfile(OttaiConstants.apiBase, stored: .cnPhone), .cnPhone)
         XCTAssertEqual(OttaiCloudClient.activeProfile(OttaiConstants.apiBase, stored: .globalPhone), .watch)
         XCTAssertEqual(OttaiCloudClient.activeProfile(OttaiConstants.apiBaseSyai, stored: .globalPhone), .watch)
+    }
+
+    func testOldNativeSessionIsNotRelabelledOrClearedWhenNewIdentityIsCreated() throws {
+        try defaults { defaults in
+            let legacyOwner = "ottai-seas:a:g:ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"
+            defaults.set("GLOBAL_PHONE", forKey: "ottai_session_profile")
+            defaults.set(legacyOwner, forKey: "ottai_global_common_device_id")
+            defaults.set("old-native-token", forKey: "ottai_access_token")
+            defaults.set("old-native-root", forKey: "ottai_glucose_secret_key")
+            defaults.set("sensor-keys", forKey: "ottai_keya_AABBCCDDEEFF")
+            defaults.set("checkpoint", forKey: "ottai_preparation_AABBCCDDEEFF")
+            XCTAssertEqual(OttaiRegistry.loadSessionProfile(in: defaults), .globalPhoneLegacy)
+            let newOwner = OttaiRegistry.loadOrCreateGlobalHeaderDeviceId(in: defaults)
+            XCTAssertTrue(OttaiGlobalContract.validDeviceID(newOwner))
+            XCTAssertNotEqual(newOwner, legacyOwner)
+            XCTAssertEqual(OttaiRegistry.loadLegacyGlobalHeaderDeviceId(in: defaults), legacyOwner)
+            XCTAssertEqual(OttaiRegistry.loadSessionProfile(in: defaults), .globalPhoneLegacy)
+            XCTAssertEqual(defaults.string(forKey: "ottai_access_token"), "old-native-token")
+            XCTAssertEqual(defaults.string(forKey: "ottai_glucose_secret_key"), "old-native-root")
+            XCTAssertEqual(defaults.string(forKey: "ottai_keya_AABBCCDDEEFF"), "sensor-keys")
+            XCTAssertEqual(defaults.string(forKey: "ottai_preparation_AABBCCDDEEFF"), "checkpoint")
+            let context = try XCTUnwrap(OttaiRegistry.beginGlobalLogin(in: defaults))
+            XCTAssertTrue(OttaiRegistry.commitGlobalLogin(candidate, email: email, requested: context, in: defaults))
+            XCTAssertEqual(defaults.string(forKey: "ottai_session_profile"), "GLOBAL_PHONE_20261115")
+            XCTAssertEqual(OttaiRegistry.loadLegacyGlobalHeaderDeviceId(in: defaults), legacyOwner)
+            XCTAssertEqual(defaults.string(forKey: "ottai_keya_AABBCCDDEEFF"), "sensor-keys")
+            XCTAssertEqual(defaults.string(forKey: "ottai_preparation_AABBCCDDEEFF"), "checkpoint")
+        }
+    }
+
+    func testLegacyOwnerCannotBeSentWithCurrentPhoneLogin() {
+        let result = OttaiGlobalContract.authenticate(email: email, password: password,
+            deviceID: "ottai-seas:a:g:ABCDEFGHIJKLMNOPQRSTUVWXYZ012345", deviceModel: "Fixture", send: { _ in
+                XCTFail("An old installation identity must not be relabelled")
+                return .init(body: nil, failure: nil)
+            })
+        XCTAssertThrowsError(try result.get())
+    }
+
+    func testCurrentGlobalPhoneUsesItsOwnSecureGateway() throws {
+        let headers = OttaiGlobalContract.headers(deviceID: owner, timestamp: timestamp,
+            accessToken: "fixture-token", deviceModel: "Fixture")
+        for endpoint in [OttaiConstants.epValidateByMacV3, OttaiConstants.epCgmAuthVerify, OttaiConstants.epBindV3] {
+            let route = try XCTUnwrap(OttaiRegionalTransport.route(OttaiConstants.apiBaseGlobal + endpoint, headers: headers))
+            XCTAssertFalse(route.cn, "The Global phone appName must not route through China")
+            XCTAssertEqual(route.secureBase, "https://seas.ottai.com/cgm/security/app/server")
+            XCTAssertEqual(route.exchangeURL, "https://seas.ottai.com/cgm/security/app/server/security/exchangeKey")
+        }
     }
 
     func testInvalidOwnerStopsBeforeNetwork() {
@@ -215,12 +290,12 @@ extension OttaiGlobalLoginTests {
         }
         for key in previous.keys { defaults.removeObject(forKey: key) }
         defaults.set(base, forKey: "ottai_api_base")
-        defaults.set(base == OttaiConstants.apiBase ? "CN_PHONE" : "GLOBAL_PHONE", forKey: "ottai_session_profile")
+        defaults.set(base == OttaiConstants.apiBase ? "CN_PHONE" : OttaiRegistry.SessionProfile.globalPhone.rawValue, forKey: "ottai_session_profile")
         defaults.set("fixture-native-token", forKey: "ottai_access_token")
         defaults.set("42", forKey: "ottai_user_id")
         defaults.set(preparationRoot, forKey: "ottai_glucose_secret_key")
         defaults.set(UUID().uuidString, forKey: "ottai_session_generation")
-        defaults.set(owner, forKey: "ottai_global_common_device_id")
+        defaults.set(owner, forKey: "ottai_global_phone_device_id")
         defaults.set("fixture-cn-installation", forKey: "ottai_cn_common_device_id")
         OttaiCloudClient.lastFailure = nil
         try work(OttaiRegistry.accountContext())
@@ -286,7 +361,7 @@ extension OttaiGlobalLoginTests {
                 let seconds = try XCTUnwrap(bind.body?["activeTime"] as? Int64)
                 XCTAssertLessThan(abs(seconds - Int64(Date().timeIntervalSince1970)), 5)
                 XCTAssertEqual(bind.headers["Authorization"], "fixture-native-token")
-                XCTAssertEqual(bind.headers["appName"], base == OttaiConstants.apiBase ? "ottai" : "ottai-seas")
+                XCTAssertEqual(bind.headers["appName"], "ottai")
                 XCTAssertEqual(result?.activeTimeMs, 0)
                 XCTAssertEqual(result?.coefficient, "1")
                 XCTAssertNotNil(result?.authKeys)
@@ -387,10 +462,82 @@ extension OttaiGlobalLoginTests {
             }))
             XCTAssertEqual(calls.map(\.url), [OttaiConstants.apiBaseGlobal + OttaiConstants.epValidateByMacV3])
             XCTAssertEqual(calls.first?.headers["deviceId"], owner)
-            XCTAssertEqual(calls.first?.headers["appName"], "ottai-seas")
+            XCTAssertEqual(calls.first?.headers["appName"], "ottai")
             XCTAssertTrue(OttaiRegistry.isV3CredentialBootstrapPending(preparationMAC))
             XCTAssertEqual(OttaiRegistry.loadLastValidatedDeviceVersion(sensorId: preparationMAC), preparationFirmware)
             XCTAssertEqual(OttaiRegistry.loadMaterials(sensorId: preparationMAC).keyAHex, "")
+        }
+    }
+
+    func testProductionValidationAcceptsFreshV3MetadataWithoutKeys() throws {
+        try withPreparationAccount { _ in
+            var requests: [OttaiGlobalContract.Request] = []
+            let result = OttaiCloudClient.validateForSetup(mac: "aa:bb:cc:dd:ee:ff", send: { request in
+                requests.append(request)
+                return .init(body: ["code": "OK", "data": ["mac": self.preparationMAC,
+                    "deviceVersion": self.preparationFirmware]], failure: nil)
+            })
+            XCTAssertEqual(requests.count, 1)
+            let request = try XCTUnwrap(requests.first)
+            XCTAssertEqual(request.method, "POST")
+            XCTAssertEqual(request.url, OttaiConstants.apiBaseGlobal + OttaiConstants.epValidateByMacV3)
+            XCTAssertTrue(request.query.isEmpty)
+            XCTAssertEqual(request.headers["appName"], "ottai")
+            XCTAssertEqual(request.headers["packageName"], "com.ottai.seas")
+            XCTAssertEqual(request.headers["deviceId"], owner)
+            XCTAssertEqual(request.headers["Authorization"], "fixture-native-token")
+            let time = try XCTUnwrap(Int64(request.headers["timestamp"] ?? ""))
+            XCTAssertEqual(request.body?["signature"] as? String,
+                OttaiCloudClient.signForProfile(.globalPhone, deviceId: owner, ts: time, preparationMAC))
+            XCTAssertEqual(request.body?["mac"] as? String, preparationMAC)
+            XCTAssertEqual(result?.device.mac, preparationMAC)
+            XCTAssertEqual(result?.device.keyA, "")
+            XCTAssertEqual(result?.requiresV3Bind, true)
+            XCTAssertEqual(OttaiRegistry.loadLastValidatedDeviceVersion(sensorId: preparationMAC), preparationFirmware)
+            XCTAssertEqual(OttaiRegistry.loadMaterials(sensorId: preparationMAC).keyAHex, "")
+        }
+    }
+
+    func testProductionValidationRejectsMismatchedSensorWithoutSavingMetadata() {
+        withPreparationAccount { _ in
+            let result = OttaiCloudClient.validateForSetup(mac: preparationMAC, send: { _ in
+                .init(body: ["data": ["mac": "112233445566", "deviceVersion": self.preparationFirmware]], failure: nil)
+            })
+            XCTAssertNil(result)
+            XCTAssertNil(OttaiRegistry.loadLastValidatedDeviceVersion(sensorId: preparationMAC))
+            XCTAssertEqual(OttaiCloudClient.lastFailure?.stage, "New sensor validation (V3)")
+        }
+    }
+
+    func testProductionValidationRequiresNewLoginBeforeSendingLegacyToken() {
+        withPreparationAccount { _ in
+            UserDefaults.standard.set("GLOBAL_PHONE", forKey: "ottai_session_profile")
+            UserDefaults.standard.set("sensor-keys", forKey: "ottai_keya_112233445566")
+            var calls = 0
+            XCTAssertNil(OttaiCloudClient.validateForSetup(mac: preparationMAC, send: { _ in
+                calls += 1
+                return .init(body: nil, failure: nil)
+            }))
+            XCTAssertEqual(calls, 0)
+            XCTAssertEqual(OttaiCloudClient.lastFailure?.requiresSignIn, true)
+            XCTAssertEqual(OttaiRegistry.loadAccessToken(), "fixture-native-token")
+            XCTAssertEqual(UserDefaults.standard.string(forKey: "ottai_keya_112233445566"), "sensor-keys")
+        }
+    }
+
+    func testLegacyGlobalSessionCannotBeRelabelledForFreshBootstrap() {
+        withPreparationAccount { context in
+            UserDefaults.standard.set("GLOBAL_PHONE", forKey: "ottai_session_profile")
+            UserDefaults.standard.set("sensor-keys", forKey: "ottai_keya_112233445566")
+            var calls = 0
+            XCTAssertFalse(OttaiCloudClient.checkActivationBootstrap(mac: preparationMAC, requestedContext: context, send: { _ in
+                calls += 1
+                return .init(body: nil, failure: nil)
+            }))
+            XCTAssertEqual(calls, 0)
+            XCTAssertFalse(OttaiRegistry.isV3CredentialBootstrapPending(preparationMAC))
+            XCTAssertEqual(OttaiRegistry.loadAccessToken(), "fixture-native-token")
+            XCTAssertEqual(UserDefaults.standard.string(forKey: "ottai_keya_112233445566"), "sensor-keys")
         }
     }
 
