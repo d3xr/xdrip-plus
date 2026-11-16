@@ -39,7 +39,12 @@ final class OttaiGlobalLoginTests: XCTestCase {
         let signature = OttaiCloudClient.signForProfile(.globalPhone, deviceId: owner, ts: timestamp, "fixture-api-token", email, password)
         XCTAssertEqual(signature, "db2c906ad604584ccb13d3a2c44dd3e2")
         let body = try XCTUnwrap(OttaiGlobalContract.passwordBody(email: email, password: password, apiToken: "fixture-api-token", signature: signature))
-        XCTAssertEqual(Set(body.keys), Set(["encryptInfo", "apiToken", "signature"]))
+        XCTAssertEqual(Set(body.keys), Set(["uuid", "source", "encryptInfo", "apiToken", "signature"]))
+        XCTAssertEqual(body["source"] as? Int, 5)
+        let requestUUID = try XCTUnwrap(body["uuid"] as? String)
+        XCTAssertEqual(requestUUID.count, 32)
+        XCTAssertTrue(requestUUID.utf8.allSatisfy { (48...57).contains($0) || (65...70).contains($0) })
+        XCTAssertNil(body["type"], "Email login uses thirdLoginByPassword; no username login type")
         XCTAssertEqual(body["encryptInfo"] as? String, "Qpkz1BFBblAQvjg/STUUV30UgPhp91VauXazwylXdSndxJm8csX7pjdX1v/cnJemmbZX7bI/JWDPtIjrgnM6QVYrv1jQZ7l4KUNkDq8QQQsAQ8i+qeOR51dK0xtNpapV")
     }
 
@@ -83,6 +88,8 @@ final class OttaiGlobalLoginTests: XCTestCase {
         XCTAssertEqual(calls[1].url, "https://seas.ottai.com/cgm/app/server/user/login/variousLogin")
         XCTAssertEqual(calls[1].body?["type"] as? Int, 3)
         XCTAssertEqual(calls[1].body?["loginType"] as? Int, 3)
+        XCTAssertEqual(calls[1].body?["source"] as? Int, 5)
+        XCTAssertEqual((calls[1].body?["uuid"] as? String)?.count, 32)
         XCTAssertEqual(calls[1].body?["username"] as? String, "fixture-user")
         XCTAssertEqual(calls[1].body?["signature"] as? String, "7419a7267f3466dbf6f2edee40f9e5c8")
         XCTAssertFalse(calls.contains { $0.url == OttaiGlobalContract.loginURL })

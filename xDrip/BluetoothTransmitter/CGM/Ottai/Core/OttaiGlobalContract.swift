@@ -206,7 +206,18 @@ enum OttaiGlobalContract {
         let plain = "{\"username\":\(username),\"password\":\(secret)}"
         let key = Array("miH5ngQ7z4NZU3JgZFq87Gg6v1Y7YJm9".utf8)
         guard let ciphertext = OttaiCrypto.aesECB(.encrypt, key: key, data: Array(plain.utf8), pkcs7Padded: true) else { return nil }
-        var body: [String: Any] = ["encryptInfo": Data(ciphertext).base64EncodedString(), "apiToken": apiToken, "signature": signature]
+        // Android Ottai Global phone contract (JugglucoNG 758d35f, globalLoginRequest):
+        // both email/thirdLoginByPassword and username/variousLogin send a fresh
+        // UUID and source=5. Omitting them returns an unsuccessful server response
+        // despite HTTP 200. Do not reuse an identity or retry login implicitly.
+        let requestUUID = UUID().uuidString.replacingOccurrences(of: "-", "")
+        var body: [String: Any] = [
+            "uuid": requestUUID,
+            "source": 5,
+            "encryptInfo": Data(ciphertext).base64EncodedString(),
+            "apiToken": apiToken,
+            "signature": signature
+        ]
         if !email.contains("@") {
             body["type"] = 3
             body["loginType"] = 3
