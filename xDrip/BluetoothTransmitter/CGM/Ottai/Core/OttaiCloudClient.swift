@@ -742,6 +742,7 @@ enum OttaiCloudClient {
         let reply: RequestResult
         if let send { reply = send(request) }
         else if request.method == "GET" { reply = httpGetResult(request.url, request.query, request.headers) }
+        else if request.method == "PUT" { reply = httpPutJsonResult(request.url, json(request.body ?? [:]), request.headers) }
         else { reply = httpPostJsonResult(request.url, json(request.body ?? [:]), request.headers) }
         lastFailure = reply.failure
         return reply
@@ -949,6 +950,106 @@ enum OttaiCloudClient {
             history = .init(body: result.body, failure: result.failure?.displayText, requiresSignIn: result.failure?.requiresSignIn ?? false)
         }
         return Result { try OttaiAccountSensors.snapshot(current: current, history: history) }
+    }
+
+
+    // The cloud may allow just one currently linked sensor per account. This is
+    // independent of the sensor's physical BLE state, which cannot be inferred
+    // from the account history or from the AlreadyBinding business code.
+    enum GlobalBindingLookup: Equatable {
+        case bound(String)
+        case unbound
+        case failed
+    }
+
+    enum GlobalUnbindOutcome: Equatable {
+        case released
+        case alreadyUnbound
+        case bindingChanged(String)
+        case currentSensor
+        case stillBound
+        case unverified
+        case failed
+    }
+
+    /// Read only the currently linked sensor. No keyA is required: a newly linked
+    /// V3 sensor may not have any reusable Bluetooth keys in this response.
+    /// Historical records must never be used to choose what to unlink.
+    static func currentGlobalBinding(requestedContext: OttaiAccountContext,
+                                     send: OttaiGlobalContract.Send? = nil) -> GlobalBindingLookup {
+        guard requestedContext.apiBase == OttaiConstants.apiBaseGlobal,
+              preparationContextIsCurrent(requestedContext) else { return .failed }
+        let ts = now()
+        let req = OttaiGlobalContract.Request(
+            method: "GET", url: requestedContext.apiBase + OttaiConstants.epGetBindDevice,
+            headers: headers(ts: ts, apiBase: requestedContext.apiBase))
+        let reply = preparationSend(req, send: send)
+        guard preparationContextIsCurrent(requestedContext), reply.failure == nil, let body = reply.body else {
+            if lastFailure == nil {
+                lastFailure = CloudFailure(text: "Could not verify the account's current sensor. No unlink request was sent.",
+                                           stage: "Current account sensor")
+            }
+            return .failed
+        }
+        do {
+            let snapshot = try OttaiAccountSensors.snapshot(
+                current: .init(body: body, failure: nil), history: nil)
+            guard let current = snapshot.sensors.first(where: { $0.boundToAccount }) else { return .unbound }
+            return .bound(current.mac)
+        } catch {
+            lastFailure = CloudFailure(text: "The current account binding response was incomplete. No unlink request was sent.",
+                                       stage: "Current account sensor")
+            return .failed
+        }
+    }
+
+    /// Exactly one user-confirmed PUT, surrounded by fresh read-only account checks.
+    /// Does not touch local BLE keys, sensor IDs, activation or lifetime state.
+    /// A failed/ambiguous PUT is reconciled by GET; it is never automatically repeated.
+    static func releasePreviousGlobalBinding(oldMac: String, newMac: String,
+                                             requestedContext: OttaiAccountContext,
+                                             send: OttaiGlobalContract.Send? = nil) -> GlobalUnbindOutcome {
+        guard let old = OttaiAccountSensors.canonicalMAC(oldMac),
+              let target = OttaiAccountSensors.canonicalMAC(newMac),
+              requestedContext.apiBase == OttaiConstants.apiBaseGlobal,
+              preparationContextIsCurrent(requestedContext) else { return .failed }
+        guard old != target else { return .currentSensor }
+
+        switch currentGlobalBinding(requestedContext: requestedContext, send: send) {
+        case .unbound: return .alreadyUnbound
+        case .bound(let linked):
+            guard linked == old else { return .bindingChanged(linked) }
+        case .failed: return .failed
+        }
+
+        // The account can be changed or logged out while the first GET is running.
+        guard preparationContextIsCurrent(requestedContext) else { return .failed }
+        let ts = now()
+        let req = OttaiGlobalContract.Request(
+            method: "PUT", url: requestedContext.apiBase + OttaiConstants.epUnbind,
+            body: ["mac": old, "deviceType": "cgm", "unbindType": 0],
+            headers: headers(ts: ts, apiBase: requestedContext.apiBase))
+        let write = preparationSend(req, send: send)
+        guard preparationContextIsCurrent(requestedContext) else { return .unverified }
+
+        // Verify even if the PUT response was lost; no second mutation is attempted.
+        let verified = currentGlobalBinding(requestedContext: requestedContext, send: send)
+        switch verified {
+        case .unbound: return .released
+        case .bound(let linked):
+            if linked == old {
+                lastFailure = write.failure ?? CloudFailure(
+                    text: "The server still lists the previous sensor as linked. Nothing else was changed.",
+                    stage: "Unlink previous sensor")
+                return .stillBound
+            }
+            return .bindingChanged(linked)
+        case .failed:
+            lastFailure = write.failure ?? lastFailure ?? CloudFailure(
+                text: "The unlink response could not be verified. Recheck the account before trying again.",
+                stage: "Unlink previous sensor")
+            return .unverified
+        }
     }
 
     static func unbind(mac: String) -> Bool { unbind(mac: mac, headerOverride: nil) }
@@ -1343,6 +1444,11 @@ enum OttaiCloudClient {
         return request("POST", url: url, body: body, headers: h, timeoutMs: timeoutMs)
     }
 
+    private static func httpPutJsonResult(_ url: String, _ body: String, _ headers: [String: String]) -> RequestResult {
+        var h = headers; h["Content-Type"] = "application/json;charset=UTF-8"
+        return requestResult("PUT", url: url, body: body, headers: h)
+    }
+
     private static func httpPutJson(_ url: String, _ body: String, _ headers: [String: String]) -> [String: Any]? {
         var h = headers; h["Content-Type"] = "application/json;charset=UTF-8"
         return request("PUT", url: url, body: body, headers: h)
@@ -1390,6 +1496,7 @@ enum OttaiCloudClient {
         if path.hasSuffix("/accountLogin") { return "Mobile sign-in" }
         if path.hasSuffix("/variousLogin") { return "Global sign-in" }
         if path.hasSuffix("/getBindDevice") { return "Current account sensor" }
+        if path.hasSuffix("/unBindDevice") { return "Unlink previous sensor" }
         if path.hasSuffix("/deviceBind/list") { return "Account sensor history" }
         if path.hasSuffix("/validateDeviceByMacV3") { return "New sensor validation (V3)" }
         if path.hasSuffix("/validateDeviceByMacV2") { return "Sensor validation (V2)" }

@@ -80,7 +80,7 @@ enum OttaiAccountSensors {
             currentSensor = sensor
         }
         var sensors = currentSensor.map { [$0] } ?? []
-        var note = "Choosing a sensor only saves its ID on this phone. It does not activate, bind, unbind or connect a sensor. For a previously activated sensor, restore keys from the cloud; a new unused Global sensor must use Check new Global sensor first."
+        var note = "Choosing a sensor only saves its ID on this phone. It does not activate, bind, unbind or connect a sensor. For a previously activated sensor, restore keys from the cloud; a new unused Global sensor must use Check new Global sensor first. To release a previous binding, use Unlink previous cloud sensor with explicit confirmation."
         if let history {
             // Any failed history lookup is an error, even if it included data; never hide an expired session.
             let body = try checked(history)

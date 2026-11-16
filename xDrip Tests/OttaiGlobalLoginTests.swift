@@ -476,6 +476,114 @@ extension OttaiGlobalLoginTests {
         }
     }
 
+
+    func testReadOnlyCurrentGlobalBindingDoesNotNeedKeyAOrHistory() {
+        withPreparationAccount { account in
+            var requests: [OttaiGlobalContract.Request] = []
+            let outcome = OttaiCloudClient.currentGlobalBinding(requestedContext: account, send: { request in
+                requests.append(request)
+                return .init(body: ["code": "OK", "data": ["mac": "11:22:33:44:55:66"]], failure: nil)
+            })
+            XCTAssertEqual(outcome, .bound("112233445566"))
+            XCTAssertEqual(requests.count, 1)
+            XCTAssertEqual(requests[0].method, "GET")
+            XCTAssertEqual(requests[0].url, OttaiConstants.apiBaseGlobal + OttaiConstants.epGetBindDevice)
+            XCTAssertEqual(requests[0].headers["appName"], "ottai")
+            XCTAssertEqual(requests[0].headers["Authorization"], "fixture-native-token")
+        }
+    }
+
+    func testUnlinkPreviousGlobalSensorUsesOneExactPutThenVerifiesReadOnly() {
+        withPreparationAccount { account in
+            let previous = "112233445566"
+            var requests: [OttaiGlobalContract.Request] = []
+            let result = OttaiCloudClient.releasePreviousGlobalBinding(
+                oldMac: previous, newMac: preparationMAC, requestedContext: account,
+                send: { request in
+                    requests.append(request)
+                    if requests.count == 1 { return .init(body: ["data": ["mac": previous]], failure: nil) }
+                    if requests.count == 2 { return .init(body: ["code": "OK"], failure: nil) }
+                    return .init(body: ["code": "OK", "data": NSNull()], failure: nil)
+                })
+            XCTAssertEqual(result, .released)
+            XCTAssertEqual(requests.map(\.method), ["GET", "PUT", "GET"])
+            XCTAssertEqual(requests[1].url, OttaiConstants.apiBaseGlobal + OttaiConstants.epUnbind)
+            XCTAssertEqual(requests[1].body?["mac"] as? String, previous)
+            XCTAssertEqual(requests[1].body?["deviceType"] as? String, "cgm")
+            XCTAssertEqual(requests[1].body?["unbindType"] as? Int, 0)
+            XCTAssertTrue(requests.allSatisfy { $0.headers["appName"] == "ottai" })
+            XCTAssertEqual(OttaiRegistry.loadMaterials(sensorId: preparationMAC).keyAHex, "")
+            XCTAssertFalse(OttaiRegistry.isV3CredentialBootstrapPending(preparationMAC))
+        }
+    }
+
+    func testUnlinkPreviousGlobalSensorRejectsDifferentAccountBinding() {
+        withPreparationAccount { account in
+            var calls = 0
+            let result = OttaiCloudClient.releasePreviousGlobalBinding(
+                oldMac: "112233445566", newMac: preparationMAC, requestedContext: account,
+                send: { request in
+                    calls += 1
+                    XCTAssertEqual(request.method, "GET", "Never unlink a different MAC")
+                    return .init(body: ["data": ["mac": "A1B2C3D4E5F6"]], failure: nil)
+                })
+            XCTAssertEqual(result, .bindingChanged("A1B2C3D4E5F6"))
+            XCTAssertEqual(calls, 1)
+        }
+    }
+
+    func testUnlinkGlobalRejectsCurrentSensorWithoutSendingAnyRequest() {
+        withPreparationAccount { account in
+            var calls = 0
+            XCTAssertEqual(OttaiCloudClient.releasePreviousGlobalBinding(
+                oldMac: preparationMAC, newMac: preparationMAC, requestedContext: account,
+                send: { _ in
+                    calls += 1
+                    return .init(body: nil, failure: nil)
+                }), .currentSensor)
+            XCTAssertEqual(calls, 0)
+        }
+    }
+
+    func testUnlinkPreviousGlobalSensorNeverRepeatsPutAfterUnknownResponse() {
+        withPreparationAccount { account in
+            var requests: [OttaiGlobalContract.Request] = []
+            let oldMac = "112233445566"
+            let result = OttaiCloudClient.releasePreviousGlobalBinding(
+                oldMac: oldMac, newMac: preparationMAC, requestedContext: account,
+                send: { request in
+                    requests.append(request)
+                    if request.method == "PUT" {
+                        return .init(body: nil, failure: .init(text: "Connection lost", httpStatus: 500))
+                    }
+                    return .init(body: ["data": ["mac": oldMac]], failure: nil)
+                })
+            XCTAssertEqual(result, .stillBound)
+            XCTAssertEqual(requests.map(\.method), ["GET", "PUT", "GET"])
+        }
+    }
+
+    func testUnlinkGlobalDoesNotMutateOnReadFailureOrStaleAccount() {
+        withPreparationAccount { account in
+            var calls = 0
+            XCTAssertEqual(OttaiCloudClient.releasePreviousGlobalBinding(
+                oldMac: "112233445566", newMac: preparationMAC, requestedContext: account,
+                send: { request in
+                    calls += 1
+                    XCTAssertEqual(request.method, "GET")
+                    return .init(body: nil, failure: .init(text: "Binding lookup failed", httpStatus: 500))
+                }), .failed)
+            XCTAssertEqual(calls, 1)
+            UserDefaults.standard.set(UUID().uuidString, forKey: "ottai_session_generation")
+            XCTAssertEqual(OttaiCloudClient.releasePreviousGlobalBinding(
+                oldMac: "112233445566", newMac: preparationMAC, requestedContext: account,
+                send: { _ in
+                    XCTFail("Changed account must stop before any request")
+                    return .init(body: nil, failure: nil)
+                }), .failed)
+        }
+    }
+
     func testGateway500DuringFreshGlobalCheckIdentifiesTheStepAndNeverBinds() {
         withPreparationAccount { context in
             var calls = 0
