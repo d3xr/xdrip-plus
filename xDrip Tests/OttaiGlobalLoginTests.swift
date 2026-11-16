@@ -493,6 +493,13 @@ extension OttaiGlobalLoginTests {
         }
     }
 
+    func testGlobalUnlinkReasonIsVoluntaryEndNotInvalidPlaceholder() {
+        // Global rejected 0 as "解绑类型输入不合法" (invalid unbind type).
+        // 13 is the Syai API's named "endedEarly" reason (not expiry = 10).
+        XCTAssertEqual(OttaiCloudClient.globalRetiredSensorUnbindType, 13)
+        XCTAssertNotEqual(OttaiCloudClient.globalRetiredSensorUnbindType, 0)
+    }
+
     func testUnlinkPreviousGlobalSensorUsesOneExactPutThenVerifiesReadOnly() {
         withPreparationAccount { account in
             let previous = "112233445566"
@@ -510,7 +517,7 @@ extension OttaiGlobalLoginTests {
             XCTAssertEqual(requests[1].url, OttaiConstants.apiBaseGlobal + OttaiConstants.epUnbind)
             XCTAssertEqual(requests[1].body?["mac"] as? String, previous)
             XCTAssertEqual(requests[1].body?["deviceType"] as? String, "cgm")
-            XCTAssertEqual(requests[1].body?["unbindType"] as? Int, 0)
+            XCTAssertEqual(requests[1].body?["unbindType"] as? Int, 13)
             XCTAssertTrue(requests.allSatisfy { $0.headers["appName"] == "ottai" })
             XCTAssertEqual(OttaiRegistry.loadMaterials(sensorId: preparationMAC).keyAHex, "")
             XCTAssertFalse(OttaiRegistry.isV3CredentialBootstrapPending(preparationMAC))

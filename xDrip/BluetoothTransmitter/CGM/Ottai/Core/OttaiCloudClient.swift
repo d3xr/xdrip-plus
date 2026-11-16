@@ -962,6 +962,12 @@ enum OttaiCloudClient {
         case failed
     }
 
+    /// Unlink reason supported by the CGM server's unBindDevice contract.
+    /// SyaiUnbindReason.endedEarly = 13 (voluntary retirement before expiry).
+    /// Global rejected the legacy placeholder 0 with 解绑类型输入不合法
+    /// ("invalid unbind type"). Do not auto-retry with another reason code.
+    static let globalRetiredSensorUnbindType = 13
+
     enum GlobalUnbindOutcome: Equatable {
         case released
         case alreadyUnbound
@@ -1027,7 +1033,7 @@ enum OttaiCloudClient {
         let ts = now()
         let req = OttaiGlobalContract.Request(
             method: "PUT", url: requestedContext.apiBase + OttaiConstants.epUnbind,
-            body: ["mac": old, "deviceType": "cgm", "unbindType": 0],
+            body: ["mac": old, "deviceType": "cgm", "unbindType": globalRetiredSensorUnbindType],
             headers: headers(ts: ts, apiBase: requestedContext.apiBase))
         let write = preparationSend(req, send: send)
         guard preparationContextIsCurrent(requestedContext) else { return .unverified }
@@ -1070,7 +1076,10 @@ enum OttaiCloudClient {
             return OttaiSyaiClient.unbind(mac: canonical, unbindType: type) != nil || (lastFailure?.code.caseInsensitiveEquals(bizEndUsing) ?? false)
         }
         let ts = now()
-        let body: [String: Any] = ["mac": canonical, "deviceType": "cgm", "unbindType": 0]
+        // Keep the China route unchanged; Global must use a supported end reason,
+        // including when the older read-only Fetch path offers an explicit unlink.
+        let reason = base() == OttaiConstants.apiBaseGlobal ? globalRetiredSensorUnbindType : 0
+        let body: [String: Any] = ["mac": canonical, "deviceType": "cgm", "unbindType": reason]
         let requestHeaders = headerOverride?(ts) ?? headers(ts: ts, apiBase: base())
         guard let resp = httpPutJson(base() + OttaiConstants.epUnbind, json(body), requestHeaders) else { return false }
         let bizCode = anyToString(resp["code"])

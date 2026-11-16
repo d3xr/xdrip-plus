@@ -3666,7 +3666,7 @@ private extension BluetoothPeripheralDetailState {
                     }
                     self.pendingAlert = BluetoothPeripheralDetailAlert(
                         title: "Unlink previous sensor?",
-                        message: "Ottai Global currently links \(previousID). New sensor: \(newID).\n\nUnlink ONLY if \(previousID) is no longer in use. This can interrupt its cloud data sharing and is not automatically reversible. The app will not stop the physical sensor, delete saved Bluetooth keys, or activate \(newID).",
+                        message: "Ottai Global currently links \(previousID). New sensor: \(newID).\n\nUnlink ONLY if \(previousID) is no longer in use. The server may permanently mark it ended, prevent future pairing, and stop its cloud sharing. This action is not reversible here. xDrip will not send a Bluetooth stop command, delete saved keys, or activate \(newID).",
                         primaryButtonTitle: "Unlink \(previousID)",
                         primaryAction: { [weak self, weak ottai] in
                             guard let self, let ottai else { return }
@@ -3709,7 +3709,9 @@ private extension BluetoothPeripheralDetailState {
                                   message: "The account now links \(current). No further unlink was attempted. Review the account before continuing.")
                 case .stillBound:
                     self.showInfo(title: "Sensor still linked",
-                                  message: result.errorText.isEmpty ? "The server still reports \(previousID) as linked. No additional unlink request was sent." : result.errorText)
+                                  message: result.errorText.isEmpty
+                                      ? "Ottai Global still reports \(previousID) as linked. No other unlink reason was tried and no additional request was sent."
+                                      : result.errorText + "\n\nNo other unlink reason was tried. The cloud binding remains in place.")
                 case .unverified:
                     self.showInfo(title: "Unlink not verified",
                                   message: "The result is uncertain because the server could not confirm the current binding. Do not repeat the action until checking the account.")
