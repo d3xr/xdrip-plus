@@ -140,4 +140,19 @@ final class OttaiLoginFlowTests: XCTestCase {
         XCTAssertTrue(contextualized.displayText.contains("Account rejected"))
     }
 
+    func testActivation500IdentifiesTheFailedOperationWithoutExposingSensorOrToken() throws {
+        let base = "https://seas.ottai.com/cgm/app/server"
+        let paths = ["/device/validateDeviceByMacV3", "/cgmAuth/verify", "/deviceBind/composite/bindV3"]
+        let failure = try XCTUnwrap(OttaiCloudClient.decodeRequestResult(status: 200,
+            body: ["code": "500", "message": "NET_SECURITY_SYSTEM_ERROR"]).failure)
+        let messages = paths.map { path in
+            failure.contextualized(stage: OttaiCloudClient.requestStage(base + path), origin: "authenticated").displayText
+        }
+        XCTAssertEqual(Set(messages).count, 3)
+        XCTAssertTrue(messages.allSatisfy { $0.contains("500") && $0.contains("NET_SECURITY_SYSTEM_ERROR") })
+        XCTAssertTrue(messages[0].contains("validation (V3)"))
+        XCTAssertTrue(messages[1].contains("Bluetooth authentication"))
+        XCTAssertTrue(messages[2].contains("credential binding (V3)"))
+    }
+
 }

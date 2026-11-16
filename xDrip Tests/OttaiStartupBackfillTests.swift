@@ -20,6 +20,157 @@ final class OttaiStartupBackfillTests: XCTestCase {
         return try XCTUnwrap(OttaiCrypto.encryptPayload(header + record, sessionKeyHex: key))
     }
 
+    @MainActor private func withPreparationRecoveryAccount(base: String,
+        _ work: (OttaiAccountContext) throws -> Void) rethrows {
+        let defaults = UserDefaults.standard
+        let previous = defaults.dictionaryRepresentation().filter { $0.key.hasPrefix("ottai_") }
+        let previousFailure = OttaiCloudClient.lastFailure
+        defer {
+            for key in defaults.dictionaryRepresentation().keys where key.hasPrefix("ottai_") { defaults.removeObject(forKey: key) }
+            for (key, value) in previous { defaults.set(value, forKey: key) }
+            OttaiCloudClient.lastFailure = previousFailure
+        }
+        for key in previous.keys { defaults.removeObject(forKey: key) }
+        defaults.set(base, forKey: "ottai_api_base")
+        OttaiRegistry.saveSessionProfile(base == OttaiConstants.apiBase ? .cnPhone : .globalPhone)
+        defaults.set("fixture-preparation-token", forKey: "ottai_access_token")
+        defaults.set("fixture-user", forKey: "ottai_user_id")
+        defaults.set("0123456789ABCDEF", forKey: "ottai_glucose_secret_key")
+        defaults.set(UUID().uuidString, forKey: "ottai_session_generation")
+        try work(OttaiRegistry.accountContext())
+    }
+
+    private func preparedCloudResponse(_ h: OttaiLifetimeTransportHarness) throws -> OttaiCloudClient.RequestResult {
+        let fieldTime: Int64 = 1_760_000_000_000
+        let key = OttaiCrypto.deriveFieldKey(glucoseSecretKey: "0123456789ABCDEF", fieldTimestamp: fieldTime, mac: h.id)
+        func encrypt(_ value: String) throws -> String {
+            try XCTUnwrap(OttaiCrypto.encryptCloudField(plaintext: value, fieldKey: key))
+        }
+        return .init(body: ["code": "OK", "data": ["cgmDeviceRespVO": [
+            "mac": h.id, "deviceVersion": h.materials.deviceVersion,
+            "keyA": try encrypt(String(repeating: "01", count: 96)),
+            "produceTime": fieldTime, "activeTime": fieldTime, "activeExpireTime": Int64(14 * 86_400_000), "id": 123],
+            "cgmDeviceMethodVO": ["method": try encrypt("C0"), "coefficient": try encrypt("1"),
+                "methodUpdateTime": fieldTime, "coeffUpdateTime": fieldTime]]], failure: nil)
+    }
+
+    private func stagePreparationRecovery(_ h: OttaiLifetimeTransportHarness, attempted: Bool = false) throws {
+        var preparation = OttaiPreparationCheckpoint(sensorID: h.id, bluetoothID: h.bluetoothID,
+            apiBase: h.account.apiBase, userID: h.account.userId, authorizedAtMs: Int64(Date().timeIntervalSince1970 * 1000))
+        preparation.liveFirmware = h.materials.deviceVersion
+        preparation.bindAttempted = attempted
+        preparation.storedMaterials = true
+        XCTAssertTrue(OttaiRegistry.savePreparationCheckpoint(preparation))
+        h.transmitter.resumeActivationTransportTest(materials: h.preparedMaterials)
+        h.transmitter.receiveLifetimeTest(uuid: OttaiConstants.charSoftwareVersion, value: Array(h.materials.deviceVersion.utf8))
+        h.status(2)
+    }
+
+    @MainActor private func waitForPreparationFailure(_ h: OttaiLifetimeTransportHarness) {
+        let finished = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            !h.transmitter.isPreparingOrActivating
+                && UserDefaults.standard.string(forKey: "ottai_activation_status_" + h.id) != nil
+        }, object: nil)
+        wait(for: [finished], timeout: 3)
+    }
+
+    @MainActor private func explicitlyRetryPreparation(_ h: OttaiLifetimeTransportHarness) {
+        h.transmitter.disconnectLifetimeTest()
+        h.configure()
+        let discovered = expectation(description: "Manual Start requires fresh discovery and sensor status")
+        h.transmitter.activationTestRediscover = { discovered.fulfill() }
+        h.status(2)
+        h.transmitter.startSensor(sensorCode: nil, startDate: Date())
+        wait(for: [discovered], timeout: 3)
+        h.transmitter.finishActivationDiscoveryTest()
+        h.transmitter.receiveLifetimeTest(uuid: OttaiConstants.charSoftwareVersion, value: Array(h.materials.deviceVersion.utf8))
+        h.status(2)
+    }
+
+    @MainActor func testCNAndGlobalRuntimePermitManualRetryOnlyAfterExplicitBindingRefusal() throws {
+        for base in [OttaiConstants.apiBase, OttaiConstants.apiBaseGlobal] {
+            try withPreparationRecoveryAccount(base: base) { account in
+                let h = OttaiLifetimeTransportHarness(account: account)
+                defer { h.clean() }
+                let ready = try preparedCloudResponse(h)
+                var methods: [String] = [], posts = 0
+                h.transmitter.preparationTestSend = { request in
+                    methods.append(request.method)
+                    if request.method == "GET" { return .init(body: ["data": NSNull()], failure: nil) }
+                    posts += 1
+                    XCTAssertTrue(OttaiRegistry.loadPreparationCheckpoint(h.id)?.bindAttempted == true)
+                    return posts == 1
+                        ? OttaiCloudClient.decodeRequestResult(status: 200, body: ["code": "AppUser_AlreadyBinding"])
+                        : ready
+                }
+                try stagePreparationRecovery(h)
+                waitForPreparationFailure(h)
+                XCTAssertEqual(methods, ["GET", "POST", "GET"])
+                XCTAssertFalse(try XCTUnwrap(OttaiRegistry.loadPreparationCheckpoint(h.id)).bindAttempted)
+                XCTAssertTrue(h.payloads.isEmpty)
+                let resumed = expectation(description: "Manual retry obtains credentials before any factory writes")
+                h.transmitter.preparationTestLocalReauth = { resumed.fulfill() }
+                explicitlyRetryPreparation(h)
+                wait(for: [resumed], timeout: 3)
+                XCTAssertEqual(methods, ["GET", "POST", "GET", "GET", "POST"])
+                XCTAssertTrue(try XCTUnwrap(OttaiRegistry.loadPreparationCheckpoint(h.id)).materialsSaved)
+                XCTAssertEqual(OttaiRegistry.loadMaterials(sensorId: h.id).activeTimeMs, 0)
+                XCTAssertTrue(h.payloads.isEmpty)
+            }
+        }
+    }
+
+    @MainActor func testCNAndGlobalRuntimeNeverReplayBindingAfterHTTPOrBusiness500() throws {
+        for base in [OttaiConstants.apiBase, OttaiConstants.apiBaseGlobal] {
+            for status in [200, 500] {
+                try withPreparationRecoveryAccount(base: base) { account in
+                    let h = OttaiLifetimeTransportHarness(account: account)
+                    defer { h.clean() }
+                    var methods: [String] = []
+                    h.transmitter.preparationTestSend = { request in
+                        methods.append(request.method)
+                        return request.method == "GET" ? .init(body: ["data": NSNull()], failure: nil)
+                            : OttaiCloudClient.decodeRequestResult(status: status, body: ["code": "500"])
+                    }
+                    try stagePreparationRecovery(h)
+                    waitForPreparationFailure(h)
+                    XCTAssertTrue(try XCTUnwrap(OttaiRegistry.loadPreparationCheckpoint(h.id)).bindAttempted)
+                    XCTAssertEqual(methods, ["GET", "POST", "GET"])
+                    explicitlyRetryPreparation(h)
+                    waitForPreparationFailure(h)
+                    XCTAssertEqual(methods, ["GET", "POST", "GET", "GET"], "Even a manual retry reconciles an uncertain POST before any new binding")
+                    XCTAssertTrue(try XCTUnwrap(OttaiRegistry.loadPreparationCheckpoint(h.id)).bindAttempted)
+                    XCTAssertEqual(OttaiRegistry.loadActivationCheckpoint(h.id)?.commandSentAtMs, 0)
+                    XCTAssertTrue(h.payloads.isEmpty)
+                }
+            }
+        }
+    }
+
+    @MainActor func testPersistedUncertainBindingRecoversMatchingServerMaterialsWithoutAnotherPost() throws {
+        for base in [OttaiConstants.apiBase, OttaiConstants.apiBaseGlobal] {
+            try withPreparationRecoveryAccount(base: base) { account in
+                let h = OttaiLifetimeTransportHarness(account: account)
+                defer { h.clean() }
+                let ready = try preparedCloudResponse(h)
+                var methods: [String] = []
+                h.transmitter.preparationTestSend = { request in
+                    methods.append(request.method)
+                    XCTAssertEqual(request.method, "GET")
+                    return ready
+                }
+                let resumed = expectation(description: "Persisted uncertain binding reconciles its matching server record")
+                h.transmitter.preparationTestLocalReauth = { resumed.fulfill() }
+                try stagePreparationRecovery(h, attempted: true)
+                wait(for: [resumed], timeout: 3)
+                XCTAssertEqual(methods, ["GET"])
+                XCTAssertTrue(try XCTUnwrap(OttaiRegistry.loadPreparationCheckpoint(h.id)).materialsSaved)
+                XCTAssertEqual(OttaiRegistry.loadMaterials(sensorId: h.id).activeTimeMs, 0)
+                XCTAssertTrue(h.payloads.isEmpty)
+            }
+        }
+    }
+
     @MainActor func testCorruptLiveNotificationsDoNotSuppressPolling() throws {
         let h = OttaiLifetimeTransportHarness()
         defer { h.clean() }
@@ -699,8 +850,8 @@ private final class OttaiLifetimeTransportHarness {
         return m
     }
 
-    init(old: Bool = false, globalAccount: Bool = false, apiBase: String? = nil) {
-        account = OttaiAccountContext(apiBase: apiBase ?? (globalAccount ? OttaiConstants.apiBaseGlobal : OttaiConstants.apiBase),
+    init(old: Bool = false, globalAccount: Bool = false, apiBase: String? = nil, account: OttaiAccountContext? = nil) {
+        self.account = account ?? OttaiAccountContext(apiBase: apiBase ?? (globalAccount ? OttaiConstants.apiBaseGlobal : OttaiConstants.apiBase),
             userId: "fixture-user", login: "fixture@example.invalid", generation: "fixture-generation")
         originalStart = Int64(Date().timeIntervalSince1970 * 1000) - (old ? 31 : 2) * 86_400_000
         OttaiRegistry.saveActiveTimeMs(id, originalStart)
@@ -709,7 +860,7 @@ private final class OttaiLifetimeTransportHarness {
         transmitter = CGMOttaiTransmitter(address: bluetoothID, name: "Ottai protocol test", sensorId: id,
             bluetoothTransmitterDelegate: delegate, cGMTransmitterDelegate: delegate)
         let checkpoint = OttaiActivationAttempt(sensorID: id, bluetoothID: bluetoothID,
-            apiBase: account.apiBase, userID: account.userId, authorizedAtMs: Int64(Date().timeIntervalSince1970 * 1000))
+            apiBase: self.account.apiBase, userID: self.account.userId, authorizedAtMs: Int64(Date().timeIntervalSince1970 * 1000))
         _ = OttaiRegistry.saveActivationCheckpoint(checkpoint)
         transmitter.lifetimeTestRead = { [weak self] uuid in self?.transcript.append("R:" + uuid) }
         transmitter.lifetimeTestWrite = { [weak self] uuid, bytes in

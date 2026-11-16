@@ -1405,12 +1405,53 @@ final class OttaiPreparationTests: XCTestCase {
 
     func testExplicitBindRefusalAllowsAnotherBind() {
         let result = OttaiCloudClient.recoverPreparation(version: "V1.7", bind: {
-            MaterialsResult(value: nil, failure: .init(text: "bind refused", code: "DEVICE_ALREADY_USED"))
+            MaterialsResult(value: nil, failure: .init(text: "bind refused", code: "DEVICE_ALREADY_USED", httpStatus: 200))
         }, lookup: {
             MaterialsResult(value: nil, failure: nil)
         })
         XCTAssertTrue(result.bindRejected)
         XCTAssertEqual(result.operation.failure?.code, "DEVICE_ALREADY_USED")
+    }
+
+    func testServerOrTransportErrorsNeverProveBindWasRejected() throws {
+        let failures: [OttaiCloudClient.CloudFailure] = [
+            try XCTUnwrap(OttaiCloudClient.decodeRequestResult(status: 500, body: ["code": "500"]).failure),
+            try XCTUnwrap(OttaiCloudClient.decodeRequestResult(status: 200, body: ["code": "500"]).failure),
+            .init(text: "unavailable", code: "DEVICE_ALREADY_USED", httpStatus: 503),
+            .init(text: "connection timed out"),
+            .init(text: "secure exchange failed", code: "DEVICE_ALREADY_USED", httpStatus: 200, origin: "transport"),
+            .init(text: "unrecognized response", code: "UNKNOWN_SERVER_FAILURE", httpStatus: 200)
+        ]
+        for failure in failures {
+            let result = OttaiCloudClient.recoverPreparation(version: "V1.7", bind: {
+                MaterialsResult(value: nil, failure: failure)
+            }, lookup: {
+                MaterialsResult(value: nil, failure: nil)
+            })
+            XCTAssertFalse(result.bindRejected, "An uncertain response must not permit another binding POST: \(failure.displayText)")
+            XCTAssertEqual(result.operation.failure?.code, failure.code)
+            XCTAssertEqual(result.operation.failure?.httpStatus, failure.httpStatus)
+        }
+    }
+
+    func testOnlyTheBindingResponseCanProveItsExplicitRefusal() {
+        let result = OttaiCloudClient.recoverPreparation(version: "V1.7", bind: {
+            MaterialsResult(value: nil, failure: .init(text: "HTTP 500", code: "500", httpStatus: 500))
+        }, lookup: {
+            MaterialsResult(value: nil, failure: .init(text: "lookup refused", code: "DEVICE_ALREADY_USED", httpStatus: 200))
+        })
+        XCTAssertFalse(result.bindRejected)
+        XCTAssertEqual(result.operation.failure?.code, "500")
+    }
+
+    func testExplicitBindRefusalSurvivesAnUnavailableReconciliationRead() {
+        let result = OttaiCloudClient.recoverPreparation(version: "V1.7", bind: {
+            MaterialsResult(value: nil, failure: .init(text: "bind refused", code: "AppUser_AlreadyBinding", httpStatus: 200))
+        }, lookup: {
+            MaterialsResult(value: nil, failure: .init(text: "lookup timed out"))
+        })
+        XCTAssertTrue(result.bindRejected)
+        XCTAssertEqual(result.operation.failure?.code, "AppUser_AlreadyBinding")
     }
 
     func testIncompleteBindFallsBackToMatchingSavedMaterials() {
@@ -1500,13 +1541,14 @@ final class OttaiPreparationTests: XCTestCase {
 }
 
 final class OttaiSetupSafetyTests: XCTestCase {
-    func testFreshGlobalHasExplicitPreparationWithoutChangingFetch() {
+    func testFreshGlobalHasDistinctCheckAndExistingSensorRestore() {
         func offer(_ api: String = OttaiConstants.apiBaseGlobal, signedIn: Bool = true,
-                   hasKeys: Bool = false, pending: Bool = false, step: OttaiSetupStep = .fetch) -> Bool {
+                   hasKeys: Bool = false, pending: Bool = false, step: OttaiSetupStep = .prepareNew) -> Bool {
             OttaiNewSensorPreparationPolicy.shouldOffer(apiBase: api, signedIn: signedIn,
                 hasKeys: hasKeys, bootstrapPending: pending, step: step)
         }
         XCTAssertTrue(offer())
+        XCTAssertFalse(offer(step: .fetch)) // Existing-sensor restore never triggers fresh V3 preparation.
         XCTAssertFalse(offer(signedIn: false))
         XCTAssertFalse(offer(hasKeys: true))
         XCTAssertFalse(offer(pending: true))
@@ -1526,17 +1568,19 @@ final class OttaiSetupSafetyTests: XCTestCase {
     private func step(sensorID: String = "0000000000AC", signedIn: Bool = true, keys: Bool = true,
                       bootstrap: Bool = false, pendingBind: Bool = false, requested: Bool = false,
                       started: Bool = false, command: Int = -1, savedCommand: Int = -1,
-                      startMs: Int64 = 0) -> OttaiSetupStep {
+                      startMs: Int64 = 0, newGlobal: Bool = false) -> OttaiSetupStep {
         OttaiSetupStep.resolve(sensorID: sensorID, signedIn: signedIn, hasKeys: keys,
             bootstrapPending: bootstrap, pendingBind: pendingBind, activationRequested: requested,
             activationStarted: started, commandStatus: command, savedCommandStatus: savedCommand,
-            startMs: startMs, nowMs: now)
+            startMs: startMs, nowMs: now, newGlobalSensor: newGlobal)
     }
 
     func testSetupOffersOnlyTheNextRequiredStep() {
         XCTAssertEqual(step(sensorID: "", signedIn: false, keys: false), .enterID)
         XCTAssertEqual(step(signedIn: false, keys: false), .signIn)
-        XCTAssertEqual(step(keys: false), .fetch)
+        XCTAssertEqual(step(keys: false), .fetch) // CN/Syai and previously linked reads
+        XCTAssertEqual(step(keys: false, newGlobal: true), .prepareNew)
+        XCTAssertEqual(step(keys: false, bootstrap: true, newGlobal: true), .activate)
         XCTAssertEqual(step(keys: false, bootstrap: true), .activate)
         XCTAssertEqual(step(keys: true), .connect)
         XCTAssertEqual(step(command: 2), .activate)
