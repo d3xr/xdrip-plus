@@ -1,20 +1,20 @@
 # Branch guide
 
-Updated November 14, 2026. [README](../README.md) · [7.2.1 sync and branch audit](upstream-sync-7.2.1.md).
+Updated November 16, 2026. [README](../README.md) · [7.2.1 sync and branch audit](upstream-sync-7.2.1.md).
 
 ## Current branches
 
-Use **`custom-build`**, the default branch, for the complete app. Its version is 7.2.1 / custom build 4247. `develop` tracks the official upstream release; the other three branches remain unchanged because open pull requests depend on them.
+Use **`custom-build`**, the default branch, for the complete app. Its version is 7.2.1 / custom build 4256 (Ottai Global M8 verified by a physical user-reported activation on 16 November 2026). `develop` tracks the official upstream release; the other three branches remain unchanged because open pull requests depend on them.
 
 | Branch | Purpose |
 |---|---|
-| `custom-build` | Full Ottai/Syai, GS1 CN and AiDex/LinX/LumiFlex integration, including our activation/lifetime, NFC, recovery and data-sharing work |
+| `custom-build` | Main production/source branch. Full Ottai/Syai, GS1 CN and AiDex/LinX/LumiFlex integration; Ottai Global phone-session fixes, new-M8 activation and explicit previous-sensor unlink flow validated in 4256 |
 | `develop` | Official upstream 7.2.1 / 4235, `f7447f1`; no custom CGM additions |
 | `feature/sibionics-gs1` | Unchanged GS1-only head `626b7f1` for open draft [upstream PR #791](https://github.com/JohanDegraeve/xdripswift/pull/791) |
 | `fix/widget-runtime-data` | Unchanged widget-fix head `9db7004` for open [upstream PR #785](https://github.com/JohanDegraeve/xdripswift/pull/785) |
 | `fix/ottai-global-native-auth` | Unchanged Ottai donor follow-up `961f47f` for open draft [PR #1](https://github.com/luborjurena/xdripswift/pull/1) |
 
-The pull-request branches are scoped review artifacts, not alternative current app builds. Do not switch an installed database between old GS1-only and combined branches: their v38 schemas differ and that cross-branch migration has not been tested.
+The `fix/ottai-activation-500` integration branch was merged into `custom-build` after 4256 passed 265 selected XCTest cases and the user reported physical Global M8 unlink/validation/activation success. The pull-request branches are scoped review artifacts, not alternative current app builds. Do not switch an installed database between old GS1-only and combined branches: their v38 schemas differ and that cross-branch migration has not been tested.
 
 ## Retired remote branches
 
