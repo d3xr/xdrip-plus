@@ -1,5 +1,8 @@
 # Ottai: native Global login and recoverable sensor setup
 
+> **Updated 2026-11-16:** the existing [contributor PR #1](https://github.com/luborjurena/xdripswift/pull/1) now points to [`c742d57`](https://github.com/d3xr/xdrip-plus/commit/c742d57c1da55f53d591a490a465ab4cea45770f), carrying the Ottai-only fixes from build 4256. The **277 XCTest** result below describes the earlier PR branch before these updates, not the new head. The matching full-fork code passed **265 selected XCTest tests** ([CI](https://github.com/d3xr/xdrip-plus/actions/runs/43813441659)); the new contributor PR head still needs its own post-port build. Physical Global M8 unlink, new V3 validation and activation were reported successful; 30-day endurance remains unverified. See [current technical handoff](ottai-global-m8-2026-11-validation.md).
+
+
 This updates the follow-up to [#736](https://github.com/JohanDegraeve/xdripswift/pull/736) on top of `feat/ottai-syai@117ba32`. Your latest changes are included; the diff contains the additional Ottai work from my fork.
 
 - Native Global mobile login, validated account sessions and sensor selection. A failed mobile login no longer saves a web token as a mobile session.

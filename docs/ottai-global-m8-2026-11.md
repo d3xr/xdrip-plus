@@ -46,7 +46,7 @@ CI для 4256: [GitHub Actions #43813441659](https://github.com/d3xr/xdrip-plus
 
 - **Текущая полная версия:** `d3xr/xdrip-plus:custom-build`, 7.2.1 (4256).
 - **Исходная Swift-интеграция:** [JohanDegraeve/xdripswift #736](https://github.com/JohanDegraeve/xdripswift/pull/736) (автор Lubor Jurena); в ней ещё не объединены все исправления из данного форка.
-- **Follow-up к автору:** [luborjurena/xdripswift #1](https://github.com/luborjurena/xdripswift/pull/1). Для upstream нужен отдельный review и перенос только совместимых изменений, без GS1, ребрендинга, личных Apple signing overrides, пациентских логов и больших UI-изменений.
+- **Follow-up к автору:** [luborjurena/xdripswift #1](https://github.com/luborjurena/xdripswift/pull/1) **обновлён 16.11.2026** до коммита [`c742d57`](https://github.com/d3xr/xdrip-plus/commit/c742d57c1da55f53d591a490a465ab4cea45770f). Перенесены только 10 файлов Ottai/тестов и секция Ottai в SwiftUI — без GS1, ребрендинга и личных Apple signing overrides. Сборку именно этой upstream-ветки необходимо проверить отдельно; решение о принятии остаётся за автором и сопровождающими.
 - **Android:** [ctqvva/JugglucoNG](https://github.com/ctqvva/JugglucoNG), актуальные правки Global от 15 ноября 2026.
 - Сборка на Mac: [профили подписи](build-profiles.md). Меняя локальный worktree, сохраняй прежние Team ID, Bundle ID, App Groups, чтобы не потерять контейнер приложения и Trio sharing. Не добавляй токены/ключи/идентификаторы пациента в Git.
 

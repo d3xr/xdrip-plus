@@ -19,6 +19,6 @@ CI: [run #43813441659](https://github.com/d3xr/xdrip-plus/actions/runs/438134416
 
 Original donor PR: [JohanDegraeve/xdripswift #736](https://github.com/JohanDegraeve/xdripswift/pull/736) by [luborjurena](https://github.com/luborjurena).
 
-Existing follow-up: [luborjurena/xdripswift #1](https://github.com/luborjurena/xdripswift/pull/1), branched from the PR author's Ottai work. This existing follow-up is **not automatically updated** by merges into `custom-build`; upstream needs an explicitly reviewed, scoped patch. Only Ottai-specific transport/login/UI/tests should go upstream; the personal fork also carries unrelated GS1, AiDex, styling, signing and workflow modifications.
+Existing follow-up: [luborjurena/xdripswift #1](https://github.com/luborjurena/xdripswift/pull/1), branched from the original author's Ottai work. **On 2026-11-16, it was explicitly updated to [`c742d57`](https://github.com/d3xr/xdrip-plus/commit/c742d57c1da55f53d591a490a465ab4cea45770f)** by porting 10 Ottai implementation/test files and only the Ottai device-UI section from the verified full fork; the contributor PR still needs independent CI and review. No unrelated GS1, AiDex, styling, signing or full-fork workflows were included. Merging this PR into the original #736 is controlled by its author/upstream maintainers.
 
 Please retain author and upstream credits (original Swift PR #736 and JugglucoNG). No patient-identifying MACs, credentials, raw BLE recordings or private signing keys are part of this documentation.
