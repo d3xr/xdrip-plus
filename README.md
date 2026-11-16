@@ -25,7 +25,7 @@ At first activation, the app requests **up to 30 days total**. It reads the life
 
 For an **already active Ottai CN or Global**, the device card offers **Request 30 days total**. The request keeps the original start time and history. It does not give the sensor another 30 days or start a new session. The app reads back the setting and checks that the sensor remains active.
 
-**Ottai activation and extension are in testing.** Syai retains its manufacturer-defined activation duration.
+**Hardware verification (16 November 2026):** a user confirmed on a physical Ottai Global M8 that unlinking a previous account sensor, checking a new sensor and starting it through xDrip+ 7.2.1 (4256) succeeded. A successful start does not establish the requested 30-day duration or continuous readings after the manufacturer's original expiry. CN, Syai, NFC wake and active-sensor lifetime extension remain separately unverified. Syai retains its manufacturer-defined activation duration.
 
 ### GS1 and Trio
 
@@ -65,15 +65,16 @@ The script builds a signed `.app` and prints its location. Installation is a sep
 ## Connect a sensor
 
 1. Open **Devices**, add the matching sensor type and enter its code or account details.
-2. Connect an already active sensor to read it. For a new Ottai, sign in to the correct regional account, wake the sensor if necessary, connect and select **Start / activate sensor**.
+2. Connect an already active sensor to read it. For an **unused Ottai Global M8**, sign in to **Global**, enter its 12-character sensor ID, and choose **Check new Global sensor**. If the account still links a previous sensor, first review **Cloud account → Unlink previous cloud sensor** and confirm release only after that sensor is retired. Retry **Check new Global sensor**, connect the physical sensor, and separately confirm **Start sensor**. For CN/Syai, follow their regional setup and NFC wake requirements.
 3. Open **Settings → OS-AID Share → Share with OS-AID** and select **Trio** to share normal glucose readings with your compatible Trio installation.
 
-New-sensor activation, NFC and AiDex-family support are in testing.
+Fresh Global M8 activation has a user-reported successful physical start (4256). NFC, CN/Syai fresh activation, 30-day endurance and AiDex-family hardware behavior still need separate verification.
 
 ## Technical documentation
 
 - [Signing profiles and capabilities](docs/build-profiles.md)
 - [Ottai activation and lifetime behavior](docs/ottai-activation.md)
+- [Ottai Global M8: working setup, cloud unlink and November 2026 fixes](docs/ottai-global-m8-2026-11.md)
 - [GS1 extension and data flow](docs/gs1-extension.md)
 - [GS1 native library, source and rebuilding](Vendor/GS1Native/README.md)
 - [Upstream user guide](https://xdrip4ios.readthedocs.io/en/latest/)
