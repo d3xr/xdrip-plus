@@ -210,7 +210,7 @@ enum OttaiGlobalContract {
         // both email/thirdLoginByPassword and username/variousLogin send a fresh
         // UUID and source=5. Omitting them returns an unsuccessful server response
         // despite HTTP 200. Do not reuse an identity or retry login implicitly.
-        let requestUUID = UUID().uuidString.replacingOccurrences(of: "-", "")
+        let requestUUID = UUID().uuidString.replacingOccurrences(of: "-", with: "")
         var body: [String: Any] = [
             "uuid": requestUUID,
             "source": 5,
